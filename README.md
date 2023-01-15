@@ -1,0 +1,1 @@
+Distributed log by book by Travis Jeffery - Distributed Services with Go_ Your Guide to Reliable, Scalable, and Maintainable Systems-Pragmatic Bookshelf
