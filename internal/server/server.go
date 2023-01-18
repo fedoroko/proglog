@@ -3,9 +3,18 @@ package server
 import (
 	"context"
 	"errors"
+	"go.opencensus.io/stats/view"
+	"go.opencensus.io/trace"
+	"strings"
+	"time"
 
 	middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	auth "github.com/grpc-ecosystem/go-grpc-middleware/auth"
+	grpcZap "github.com/grpc-ecosystem/go-grpc-middleware/logging/zap"
+	grpcCtxtags "github.com/grpc-ecosystem/go-grpc-middleware/tags"
+	"go.opencensus.io/plugin/ocgrpc"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -29,12 +38,29 @@ const (
 var _ api.LogServer = (*grpcServer)(nil)
 
 func NewGRPCServer(config *Config, opts ...grpc.ServerOption) (*grpc.Server, error) {
+	logger := zap.L().Named("server")
+	zapOpts := []grpcZap.Option{grpcZap.WithDurationField(
+		func(duration time.Duration) zapcore.Field {
+			return zap.Int64("grpc.time_ns", duration.Nanoseconds())
+		},
+	)}
+
+	if err := setupOpenConsensus(); err != nil {
+		return nil, err
+	}
+
 	opts = append(opts, grpc.StreamInterceptor(
 		middleware.ChainStreamServer(
+			grpcCtxtags.StreamServerInterceptor(),
+			grpcZap.StreamServerInterceptor(logger, zapOpts...),
 			auth.StreamServerInterceptor(authenticate),
 		)), grpc.UnaryInterceptor(middleware.ChainUnaryServer(
+		grpcCtxtags.UnaryServerInterceptor(),
+		grpcZap.UnaryServerInterceptor(logger, zapOpts...),
 		auth.UnaryServerInterceptor(authenticate),
-	)))
+	)),
+		grpc.StatsHandler(&ocgrpc.ServerHandler{}),
+	)
 
 	gsrv := grpc.NewServer(opts...)
 	srv, err := newgrpcServer(config)
@@ -56,6 +82,27 @@ func newgrpcServer(config *Config) (srv *grpcServer, err error) {
 		Config: config,
 	}
 	return srv, nil
+}
+
+func setupOpenConsensus() error {
+	trace.ApplyConfig(trace.Config{DefaultSampler: trace.AlwaysSample()})
+	err := view.Register(ocgrpc.DefaultServerViews...)
+	if err != nil {
+		return err
+	}
+
+	halfSampler := trace.ProbabilitySampler(0.5)
+	trace.ApplyConfig(trace.Config{
+		DefaultSampler: func(parameters trace.SamplingParameters) trace.SamplingDecision {
+			if strings.Contains(parameters.Name, "Produce") {
+				return trace.SamplingDecision{Sample: true}
+			}
+
+			return halfSampler(parameters)
+		},
+	})
+
+	return nil
 }
 
 func (s *grpcServer) Produce(ctx context.Context, req *api.ProduceRequest) (*api.ProduceResponse, error) {
