@@ -17,6 +17,7 @@ import (
 
 	api "github.com/fedoroko/proglog/api/v1"
 	"github.com/fedoroko/proglog/internal/config"
+	"github.com/fedoroko/proglog/internal/loadbalance"
 )
 
 func TestAgent(t *testing.T) {
@@ -92,6 +93,8 @@ func TestAgent(t *testing.T) {
 	)
 	require.NoError(t, err)
 
+	time.Sleep(time.Second * 3)
+
 	consumeResponse, err := leaderClient.Consume(
 		context.Background(),
 		&api.ConsumeRequest{
@@ -100,8 +103,6 @@ func TestAgent(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, consumeResponse.Record.Value, []byte("foo"))
-
-	time.Sleep(time.Second * 3)
 
 	followerClient := client(t, agents[1], peerTLSConfig)
 	consumeResponse, err = followerClient.Consume(
@@ -131,8 +132,9 @@ func client(t *testing.T, agent *Agent, tlsConfig *tls.Config) api.LogClient {
 	rpcAddr, err := agent.RPCAddr()
 	require.NoError(t, err)
 
-	conn, err := grpc.Dial(rpcAddr, opts...)
+	conn, err := grpc.Dial(fmt.Sprintf("%s:///%s", loadbalance.Name, rpcAddr), opts...)
 	require.NoError(t, err)
 
-	return api.NewLogClient(conn)
+	c := api.NewLogClient(conn)
+	return c
 }
